@@ -16,6 +16,7 @@ version 2.1 of the License, or (at your option) any later version.
 #include <Arduino.h>
 #include <Wire.h>
 #include "td5defs.h"
+#include "keygen.h"
 
 #define Td5RequestByteDelay       5
 #define Td5RequestDelay           55
@@ -86,10 +87,6 @@ public:
   long lastSeenTime;
   byte responseLength;
 };
-
-// Key generation
-void keyGenerate(keyBytes_t * key);
-void retrieve_keys_from_eeprom(uint8_t *seed, uint8_t *key);
 
 // Declare pids
 extern Td5Pid pidInitFrame;

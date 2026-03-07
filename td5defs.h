@@ -35,13 +35,4 @@ version 2.1 of the License, or (at your option) any later version.
 // Serial for K-Line
 #define obdSerial           Serial2
 
-// Key generation structure (for ECU authentication)
-typedef union {
-    uint16_t keyword;
-    struct {
-        uint8_t low_byte;
-        uint8_t high_byte;
-    };
-} keyBytes_t;
-
 #endif
