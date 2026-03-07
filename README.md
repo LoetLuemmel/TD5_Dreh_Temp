@@ -24,6 +24,41 @@ Basiert auf [td5opencomstm32](https://github.com/BennehBoy/td5opencomstm32).
 +----------------------------+
 ```
 
+## Architektur
+
+```mermaid
+flowchart LR
+    subgraph Fahrzeug
+        ECU[TD5 ECU]
+        OBD[OBD-II Port]
+    end
+
+    subgraph Gerät
+        ESP32[ESP32]
+        OLED[OLED Display]
+        KLINE[K-Line Interface]
+    end
+
+    ECU <-->|K-Line| OBD
+    OBD <-->|ISO 9141-2| KLINE
+    KLINE <-->|Serial| ESP32
+    ESP32 -->|I2C| OLED
+```
+
+### Programmablauf
+
+```mermaid
+stateDiagram-v2
+    [*] --> Startup
+    Startup --> Connecting: Nach 1.5s
+
+    Connecting --> Instrument: Verbunden
+    Connecting --> Connecting: Fehlgeschlagen (Retry)
+
+    Instrument --> Instrument: Daten lesen & anzeigen
+    Instrument --> Connecting: Verbindung verloren
+```
+
 ## Hardware
 
 ### Komponenten
