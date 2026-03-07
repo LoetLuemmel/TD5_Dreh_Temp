@@ -1,0 +1,17 @@
+# Arduino/ESP32 build files
+build/
+*.elf
+*.bin
+*.hex
+*.map
+
+# IDE files
+.vscode/
+*.code-workspace
+
+# macOS
+.DS_Store
+
+# Backup files
+*~
+*.bak
