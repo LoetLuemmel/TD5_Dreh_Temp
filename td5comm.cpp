@@ -13,6 +13,7 @@ version 2.1 of the License, or (at your option) any later version.
 #include <Arduino.h>
 #include <HardwareSerial.h>
 #include <Wire.h>
+#include <esp_task_wdt.h>
 #include "td5comm.h"
 #include "keygen.h"
 
@@ -185,8 +186,20 @@ int8_t Td5Comm::getPid(Td5Pid* pid)
       write_byte(pid->requestFrame[i]);
     }
 
-    // Wait for response for 300 ms
-    long waitResponseTime = currentTime + 300;
+    // Skip echo bytes (K-Line interface echoes all transmitted bytes back)
+    for (byte i = 0; i < dataLen; i++)
+    {
+      if (!read_byte(&dataCaught))
+      {
+        #ifdef _DEBUG_
+        Serial.println("Echo timeout");
+        #endif
+        break;
+      }
+    }
+
+    // Now read the actual ECU response
+    long waitResponseTime = millis() + 300;
     do
     {
       while(read_byte(&dataCaught) && (responseIndex < pid->responseLength))
@@ -273,49 +286,284 @@ void Td5Comm::initComm()
   switch (initStep)
   {
   case 0:
-    // setup
-    ecuConnection = false;
-    initTime = currentTime + 300;
-    initStep++;
-    break;
-  case 1:
-    if (currentTime >= initTime)
+    // KWP2000 Fast Init
     {
-      // drive K line high for 300ms
-      digitalWrite(K_OUT, HIGH);
-      initTime = currentTime + 300;
-      initStep++;
-    }
-    break;
-  case 2:
-  case 3:
-    if (currentTime >= initTime)
-    {
-      // start or stop bit (5-baud init sequence)
-      digitalWrite(K_OUT, (initStep == 2 ? LOW : HIGH));
-      initTime = currentTime + 25;
-      initStep++;
-    }
-    break;
-  case 4:
-    if (currentTime >= initTime)
-    {
-      // ESP32: Start Serial2 at 10400 baud with specific pins
-      obdSerial.begin(10400, SERIAL_8N1, K_IN, K_OUT);
+      ecuConnection = false;
 
-      // bit banging done, now verify connection at 10400 baud
+      #ifdef _DEBUG_
+      Serial.println("Init: Fast Init (KWP2000)");
+      #endif
+
+      obdSerial.end();
+      pinMode(K_OUT, OUTPUT);
+
+      // Idle HIGH for 300ms
+      digitalWrite(K_OUT, HIGH);
+      delay(300);
+
+      // Fast init: 25ms LOW pulse
+      digitalWrite(K_OUT, LOW);
+      delay(25);
+
+      // 25ms HIGH
+      digitalWrite(K_OUT, HIGH);
+      delay(25);
+
+      #ifdef _DEBUG_
+      Serial.println("Init: Fast init pulse complete");
+      #endif
+
+      // Start Serial at 10400 baud
+      obdSerial.begin(10400, SERIAL_8N1, K_IN, K_OUT);
+      delay(5);
+      while(obdSerial.available()) obdSerial.read();
+
+      lastReceivedPidTime = 0;
+      pidInitFrame.lastSeenTime = 0;
+
+      initTime = millis() + 50;
+      initStep = 1;
+    }
+    break;
+
+  case 1:
+    // Send INIT_FRAME and handle echo
+    if (millis() >= initTime)
+    {
+      #ifdef _DEBUG_
+      Serial.println("Init: Sending INIT_FRAME");
+      #endif
+
+      // Manually send INIT_FRAME
+      byte initFrame[] = {0x81, 0x13, 0xF7, 0x81, 0x0C};
+
+      for (int i = 0; i < 5; i++) {
+        obdSerial.write(initFrame[i]);
+        delay(5);
+      }
+
+      // Wait and read all bytes (echo + response)
+      delay(100);
+
+      byte buffer[20];
+      int count = 0;
+      while (obdSerial.available() && count < 20) {
+        buffer[count++] = obdSerial.read();
+      }
+
+      #ifdef _DEBUG_
+      Serial.printf("Init: Received %d bytes: ", count);
+      for (int i = 0; i < count; i++) {
+        Serial.printf("%02X ", buffer[i]);
+      }
+      Serial.println();
+      #endif
+
+      if (count >= 5) {
+        if (count > 5) {
+          #ifdef _DEBUG_
+          Serial.println("Init: Got response after echo!");
+          #endif
+          lastReceivedPidTime = millis();
+          initTime = millis() + Td5RequestDelay;
+          initStep = 17;  // Continue with START_DIAG
+        } else {
+          #ifdef _DEBUG_
+          Serial.println("Init: Only echo received, trying START_DIAG");
+          #endif
+          lastReceivedPidTime = millis();
+          initTime = millis() + Td5RequestDelay;
+          initStep = 17;
+        }
+      } else {
+        #ifdef _DEBUG_
+        Serial.println("Init: No response, trying slow init");
+        #endif
+        initStep = 10;
+      }
+    }
+    break;
+
+  // Slow init fallback (5-baud) - cases 10-16
+  case 10:
+    {
+      #ifdef _DEBUG_
+      Serial.println("Init: Slow init (5-baud)");
+      #endif
+
+      obdSerial.end();
+      pinMode(K_OUT, OUTPUT);
+
+      // Disable task watchdog during slow init
+      esp_task_wdt_delete(NULL);
+
+      // Idle HIGH for 300ms
+      digitalWrite(K_OUT, HIGH);
+      delay(300);
+
+      // 5-baud init: Address 0x10 = 0b00010000, sent LSB first
+      const uint8_t bits[] = {0, 0, 0, 0, 0, 1, 0, 0, 0, 1};  // Start, D0-D7, Stop
+
+      for (int i = 0; i < 10; i++) {
+        digitalWrite(K_OUT, bits[i] ? HIGH : LOW);
+        delay(200);
+      }
+
+      // Re-enable task watchdog
+      esp_task_wdt_add(NULL);
+
+      #ifdef _DEBUG_
+      Serial.println("Init: 5-baud sequence complete");
+      #endif
+
+      obdSerial.begin(10400, SERIAL_8N1, K_IN, K_OUT);
+      delay(5);
+      while(obdSerial.available()) obdSerial.read();
+
+      initTime = millis() + 300;
+      initStep = 12;
+    }
+    break;
+
+  case 12:
+    // Wait for Sync byte (0x55) from ECU
+    {
+      if (obdSerial.available())
+      {
+        byte syncByte = obdSerial.read();
+        #ifdef _DEBUG_
+        Serial.printf("Init: Received byte: 0x%02X\n", syncByte);
+        #endif
+
+        if (syncByte == 0x55)
+        {
+          #ifdef _DEBUG_
+          Serial.println("Init: Sync OK!");
+          #endif
+          initTime = currentTime + 100;
+          initStep++;
+        }
+      }
+      else if (currentTime >= initTime)
+      {
+        #ifdef _DEBUG_
+        Serial.println("Init: Timeout - no sync");
+        #endif
+        initStep = 0;
+      }
+    }
+    break;
+
+  case 13:
+    // Wait for Key Byte 1
+    {
+      if (obdSerial.available())
+      {
+        byte keyByte1 = obdSerial.read();
+        #ifdef _DEBUG_
+        Serial.printf("Init: Received key1: 0x%02X\n", keyByte1);
+        #endif
+        initTime = currentTime + 100;
+        initStep++;
+      }
+      else if (currentTime >= initTime)
+      {
+        #ifdef _DEBUG_
+        Serial.println("Init: Timeout waiting for key byte 1");
+        #endif
+        initStep = 0;
+      }
+    }
+    break;
+
+  case 14:
+    // Wait for Key Byte 2, then send inverted
+    {
+      if (obdSerial.available())
+      {
+        byte keyByte2 = obdSerial.read();
+        #ifdef _DEBUG_
+        Serial.printf("Init: Received key2: 0x%02X\n", keyByte2);
+        #endif
+
+        delay(30);
+
+        byte invertedKey2 = ~keyByte2;
+        obdSerial.write(invertedKey2);
+        #ifdef _DEBUG_
+        Serial.printf("Init: Sent inverted key2: 0x%02X\n", invertedKey2);
+        #endif
+
+        initTime = currentTime + 100;
+        initStep++;
+      }
+      else if (currentTime >= initTime)
+      {
+        #ifdef _DEBUG_
+        Serial.println("Init: Timeout waiting for key byte 2");
+        #endif
+        initStep = 0;
+      }
+    }
+    break;
+
+  case 15:
+    // Wait for inverted address from ECU
+    {
+      if (obdSerial.available())
+      {
+        byte invertedAddr = obdSerial.read();
+        #ifdef _DEBUG_
+        Serial.printf("Init: Received inverted addr: 0x%02X\n", invertedAddr);
+        #endif
+
+        if (invertedAddr == 0xEF)
+        {
+          #ifdef _DEBUG_
+          Serial.println("Init: Slow init handshake complete!");
+          #endif
+          lastReceivedPidTime = currentTime;
+          initTime = currentTime + Td5RequestDelay;
+          initStep++;
+        }
+        else
+        {
+          initStep = 0;
+        }
+      }
+      else if (currentTime >= initTime)
+      {
+        #ifdef _DEBUG_
+        Serial.println("Init: Timeout waiting for inverted address");
+        #endif
+        initStep = 0;
+      }
+    }
+    break;
+
+  case 16:
+    // Send INIT_FRAME for diagnostic session
+    if (currentTime >= initTime)
+    {
       if (getPid(&pidInitFrame) <= 0)
       {
+        #ifdef _DEBUG_
+        Serial.println("Init: No response to INIT_FRAME");
+        #endif
         initStep = 0;
         break;
       }
 
+      #ifdef _DEBUG_
+      Serial.println("Init: Got INIT_FRAME response");
+      #endif
       lastReceivedPidTime = currentTime;
       initTime = currentTime + Td5RequestDelay;
       initStep++;
     }
     break;
-  case 5:
+
+  case 17:
     if (currentTime >= initTime)
     {
       if (getPid(&pidStartDiag) <= 0)
@@ -329,7 +577,8 @@ void Td5Comm::initComm()
       initStep++;
     }
     break;
-  case 6:
+
+  case 18:
     if (currentTime >= initTime)
     {
       if (getPid(&pidRequestSeed) <= 0)
@@ -343,14 +592,14 @@ void Td5Comm::initComm()
       initStep++;
     }
     break;
-  case 7:
+
+  case 19:
     if (currentTime >= initTime)
     {
       uint8_t seed[2], key[2];
       seed[0] = pidRequestSeed.getResponseByte(3);
       seed[1] = pidRequestSeed.getResponseByte(4);
 
-      // Check if ECU is already unlocked (seed = 0x0000)
       if (seed[0] == 0x00 && seed[1] == 0x00)
       {
         #ifdef _DEBUG_
@@ -377,6 +626,9 @@ void Td5Comm::initComm()
       ecuConnection = true;
       digitalWrite(ledPin, HIGH);
       initStep = 0;
+      #ifdef _DEBUG_
+      Serial.println("Init: ECU Connected!");
+      #endif
     }
     break;
   }
