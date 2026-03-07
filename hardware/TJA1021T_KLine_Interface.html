@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TJA1021T K-Line Interface für TD5</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 { color: #333; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+        h2 { color: #0066cc; margin-top: 30px; }
+        .schematic {
+            background: white;
+            border: 2px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+            overflow-x: auto;
+            white-space: pre;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 20px 0;
+            background: white;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th { background: #0066cc; color: white; }
+        tr:nth-child(even) { background: #f9f9f9; }
+        .warning {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        .info {
+            background: #d1ecf1;
+            border: 1px solid #17a2b8;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        .component {
+            background: #e7f3ff;
+            border-left: 4px solid #0066cc;
+            padding: 10px 15px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>TJA1021T K-Line Interface für TD5 ESP32</h1>
+
+    <div class="info">
+        <strong>Hinweis:</strong> Der TJA1021T ist ein LIN-Transceiver, funktioniert aber auch
+        für ISO 9141-2 (K-Line) bei 10400 Baud. Verwende die <strong>/10</strong> Variante
+        (TJA1021T/10) für optimale Kompatibilität.
+    </div>
+
+    <h2>Schaltplan</h2>
+    <div class="schematic">
+                                    +12V (OBD Pin 16)
+                                         │
+                                         │
+                                    ┌────┴────┐
+                                    │  100nF  │ C2
+                                    └────┬────┘
+                                         │
+         +3.3V                           │
+           │                             │
+      ┌────┴────┐                        │
+      │  100nF  │ C1                     │
+      └────┬────┘                   ┌────┴────────────────────┐
+           │                        │                         │
+           ├────────────────────────┤ 7 VBAT      LIN 6 ├─────┼───────── K-Line (OBD Pin 3)
+           │                        │                         │
+           │    ┌───────────────────┤ 8 INH                   │    1kΩ
+           │    │                   │          TJA1021T       │   ┌───┐
+           │    │  (offen oder      │            SO8          ├───┤   ├─── +12V
+           │    │   zu VCC-Regler)  │                         │   └───┘
+           │    │                   │                         │    R1 (Pull-up für LIN)
+           │    │                   │ 5 GND                   │
+           │    │                   └────┬────────────────────┘
+           │    │                        │
+           │    │                        │
+           │    │                       ═╧═ GND
+           │    │
+           │    │
+           │    │      TJA1021T Pinout (Draufsicht)
+           │    │      ┌─────────────────────┐
+           │    │      │  ●                  │
+           │    │      │ 1 RXD      VBAT 8   │──── +12V
+           │    └──────│ 2 SLP_N    LIN  7   │──── K-Line
+           │           │ 3 WAKE_N   INH  6   │──── (offen)
+           │           │ 4 TXD      GND  5   │──── GND
+           │           └─────────────────────┘
+           │
+           │
+    ┌──────┴──────────────────────────────────────────────────────────────┐
+    │                                                                      │
+    │                              ESP32                                   │
+    │                                                                      │
+    │   GPIO17 (TX2) ────────────────────────────────────── TXD (Pin 4)   │
+    │                                                                      │
+    │   GPIO16 (RX2) ──────┬─────────────────────────────── RXD (Pin 1)   │
+    │                      │                                               │
+    │                 ┌────┴────┐                                          │
+    │                 │  10kΩ   │ R2 (Pull-up, RXD ist Open-Drain)        │
+    │                 └────┬────┘                                          │
+    │                      │                                               │
+    │                    +3.3V                                             │
+    │                                                                      │
+    │   3.3V ──────────────┬─────────────────────────────── SLP_N (Pin 2) │
+    │                      │                                               │
+    │                      └─────────────────────────────── WAKE_N (Pin 3)│
+    │                                                                      │
+    │   GND ─────────────────────────────────────────────── GND (Pin 5)   │
+    │                                                                      │
+    └──────────────────────────────────────────────────────────────────────┘
+
+
+    Vereinfachte Darstellung:
+
+                     +3.3V                              +12V
+                       │                                  │
+                       │                                  │
+                  ┌────┴────┐                        ┌────┴────┐
+                  │  100nF  │                        │  100nF  │
+                  └────┬────┘                        └────┬────┘
+                       │                                  │
+              ┌────────┼──────────────────────────────────┤
+              │        │        ┌─────────────┐           │
+              │        └────────┤ 2  SLP_N    │           │
+              │                 │             │           │
+              │        ┌────────┤ 3  WAKE_N   │           │
+              │        │        │             │           │
+              │        │        │  TJA1021T   ├───────────┤ 7 VBAT
+              │        │        │             │           │
+    ESP32     │        │        │             │           │         OBD-II
+    GPIO17 ───┼────────┼────────┤ 4  TXD      │           │
+    (TX2)     │        │        │             ├───────────┼──────── Pin 3
+              │        │        │         LIN ├───┐       │         (K-Line)
+              │   R2   │        │             │   │  R1   │
+    GPIO16 ───┼──[10k]─┼────────┤ 1  RXD      │   └─[1k]──┘
+    (RX2)     │    │   │        │             │
+              │    │   │        │             │
+              │ +3.3V  │        │         GND ├────────────────────  Pin 4/5
+              │        │        └──────┬──────┘                      (GND)
+              │        │               │
+              └────────┴───────────────┴──────────────────────────── GND
+    </div>
+
+    <h2>Stückliste</h2>
+    <table>
+        <tr>
+            <th>Bauteil</th>
+            <th>Wert</th>
+            <th>Beschreibung</th>
+        </tr>
+        <tr>
+            <td>U1</td>
+            <td>TJA1021T/10</td>
+            <td>LIN Transceiver, SO8 (wichtig: /10 Variante für 10.4 kBd)</td>
+        </tr>
+        <tr>
+            <td>R1</td>
+            <td>1 kΩ</td>
+            <td>LIN Bus Pull-up Widerstand (Master-Terminierung)</td>
+        </tr>
+        <tr>
+            <td>R2</td>
+            <td>10 kΩ</td>
+            <td>RXD Pull-up (Open-Drain Output)</td>
+        </tr>
+        <tr>
+            <td>C1</td>
+            <td>100 nF</td>
+            <td>Abblockkondensator 3.3V (nah am IC)</td>
+        </tr>
+        <tr>
+            <td>C2</td>
+            <td>100 nF</td>
+            <td>Abblockkondensator 12V VBAT (nah am IC)</td>
+        </tr>
+    </table>
+
+    <h2>Pinbelegung TJA1021T (SO8)</h2>
+    <table>
+        <tr>
+            <th>Pin</th>
+            <th>Name</th>
+            <th>Funktion</th>
+            <th>Verbindung</th>
+        </tr>
+        <tr>
+            <td>1</td>
+            <td>RXD</td>
+            <td>Receive Data (Open-Drain)</td>
+            <td>ESP32 GPIO16 + 10kΩ Pull-up zu 3.3V</td>
+        </tr>
+        <tr>
+            <td>2</td>
+            <td>SLP_N</td>
+            <td>Sleep Control (LOW=Sleep)</td>
+            <td>+3.3V (immer aktiv)</td>
+        </tr>
+        <tr>
+            <td>3</td>
+            <td>WAKE_N</td>
+            <td>Wake-up Input</td>
+            <td>+3.3V (nicht verwendet)</td>
+        </tr>
+        <tr>
+            <td>4</td>
+            <td>TXD</td>
+            <td>Transmit Data Input</td>
+            <td>ESP32 GPIO17</td>
+        </tr>
+        <tr>
+            <td>5</td>
+            <td>GND</td>
+            <td>Masse</td>
+            <td>GND</td>
+        </tr>
+        <tr>
+            <td>6</td>
+            <td>LIN</td>
+            <td>LIN/K-Line Bus</td>
+            <td>OBD-II Pin 3 + 1kΩ Pull-up zu 12V</td>
+        </tr>
+        <tr>
+            <td>7</td>
+            <td>VBAT</td>
+            <td>Batteriespannung</td>
+            <td>+12V (OBD-II Pin 16)</td>
+        </tr>
+        <tr>
+            <td>8</td>
+            <td>INH</td>
+            <td>Inhibit Output</td>
+            <td>Offen lassen (oder für Spannungsregler)</td>
+        </tr>
+    </table>
+
+    <h2>OBD-II Stecker Pinbelegung</h2>
+    <table>
+        <tr>
+            <th>OBD Pin</th>
+            <th>Funktion</th>
+            <th>Verbindung</th>
+        </tr>
+        <tr>
+            <td>3</td>
+            <td>K-Line</td>
+            <td>TJA1021T Pin 6 (LIN)</td>
+        </tr>
+        <tr>
+            <td>4</td>
+            <td>Chassis GND</td>
+            <td>GND</td>
+        </tr>
+        <tr>
+            <td>5</td>
+            <td>Signal GND</td>
+            <td>GND</td>
+        </tr>
+        <tr>
+            <td>16</td>
+            <td>+12V Batterie</td>
+            <td>TJA1021T Pin 7 (VBAT)</td>
+        </tr>
+    </table>
+
+    <div class="warning">
+        <strong>Wichtige Hinweise:</strong>
+        <ul>
+            <li>Verwende unbedingt die <strong>TJA1021T/10</strong> Variante (10.4 kBd) - nicht die /20 Variante!</li>
+            <li>Der RXD-Pin ist <strong>Open-Drain</strong> - der 10kΩ Pull-up ist zwingend erforderlich</li>
+            <li>Der 1kΩ Pull-up am LIN-Pin dient als Master-Terminierung</li>
+            <li>Abblockkondensatoren möglichst nah am IC platzieren</li>
+            <li>Der TJA1021T echoiert gesendete Bytes - der Code berücksichtigt das bereits</li>
+        </ul>
+    </div>
+
+    <h2>Unterschiede zum L9637D</h2>
+    <div class="component">
+        <table>
+            <tr>
+                <th>Eigenschaft</th>
+                <th>L9637D</th>
+                <th>TJA1021T</th>
+            </tr>
+            <tr>
+                <td>RXD Output</td>
+                <td>Push-Pull</td>
+                <td>Open-Drain (Pull-up nötig!)</td>
+            </tr>
+            <tr>
+                <td>Sleep Mode</td>
+                <td>Nein</td>
+                <td>Ja (SLP_N Pin)</td>
+            </tr>
+            <tr>
+                <td>Wake-up</td>
+                <td>Nein</td>
+                <td>Ja (WAKE_N Pin)</td>
+            </tr>
+            <tr>
+                <td>Echo</td>
+                <td>Ja</td>
+                <td>Ja</td>
+            </tr>
+        </table>
+    </div>
+
+    <footer style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; color: #666;">
+        <p>TD5 RPM/Temp Monitor - TJA1021T Interface</p>
+        <p>Quellen: <a href="https://www.nxp.com/docs/en/data-sheet/TJA1021.pdf">NXP TJA1021 Datasheet</a></p>
+    </footer>
+</body>
+</html>
