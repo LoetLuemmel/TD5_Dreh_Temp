@@ -2,7 +2,8 @@
 
 Vereinfachtes ESP32-basiertes Anzeigegerät für Land Rover TD5 Motoren. Zeigt Drehzahl (RPM) und Kühlmitteltemperatur mit Verlaufskurve an.
 
-https://td5.390er.de/images/SSD1306_gross.jpg
+[https://td5.390er.de/images/SSD1306_gross.jpg](https://td5.390er.de/images/SSD1306_gross.jpg)<img width="800" height="1067" alt="image" src="https://github.com/user-attachments/assets/9a5b0866-b18e-4a3d-b1a8-4e853b5de527" />
+
 
 Basiert auf [td5opencomstm32](https://github.com/BennehBoy/td5opencomstm32).
 
